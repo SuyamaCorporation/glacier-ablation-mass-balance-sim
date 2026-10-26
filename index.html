@@ -1,0 +1,264 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>氷河 マスバランス シミュレーション</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-900 min-h-screen p-4">
+<div class="max-w-4xl mx-auto">
+  <h1 class="text-2xl font-bold text-white text-center mb-1">氷河 融解速度 マスバランス シミュレーション</h1>
+  <p class="text-gray-400 text-center text-sm mb-4">気温・降雪量・アルベドのスライダーで氷河の100年変化を計算</p>
+
+  <div class="flex flex-col lg:flex-row gap-4">
+    <!-- Controls -->
+    <div class="lg:w-72 space-y-3">
+      <!-- Presets -->
+      <div class="bg-gray-800 rounded-xl p-3">
+        <p class="text-gray-400 text-xs uppercase mb-2">IPCCシナリオ プリセット</p>
+        <div class="space-y-1" id="scenario-btns"></div>
+      </div>
+
+      <!-- Sliders -->
+      <div class="bg-gray-800 rounded-xl p-3 space-y-3">
+        <p class="text-gray-400 text-xs uppercase mb-1">パラメータ</p>
+        <div>
+          <label class="text-gray-300 text-sm flex justify-between">
+            <span>気温変化 (ΔT)</span>
+            <span id="temp-val" class="text-yellow-400 font-bold">+2.0°C</span>
+          </label>
+          <input type="range" id="temp-slider" min="-2" max="6" step="0.5" value="2" class="w-full accent-yellow-500" aria-label="気温変化スライダー">
+        </div>
+        <div>
+          <label class="text-gray-300 text-sm flex justify-between">
+            <span>年間降雪量</span>
+            <span id="snow-val" class="text-blue-400 font-bold">1000 mm/yr</span>
+          </label>
+          <input type="range" id="snow-slider" min="500" max="2000" step="50" value="1000" class="w-full accent-blue-500" aria-label="降雪量スライダー">
+        </div>
+        <div>
+          <label class="text-gray-300 text-sm flex justify-between">
+            <span>アルベド (反射率)</span>
+            <span id="albedo-val" class="text-cyan-400 font-bold">0.65</span>
+          </label>
+          <input type="range" id="albedo-slider" min="0.3" max="0.9" step="0.01" value="0.65" class="w-full accent-cyan-500" aria-label="アルベドスライダー">
+        </div>
+      </div>
+
+      <!-- Stats -->
+      <div class="bg-gray-800 rounded-xl p-3 space-y-2 text-sm">
+        <div class="flex justify-between">
+          <span class="text-gray-400">年間蓄積量</span>
+          <span id="accum-val" class="text-blue-300 font-bold"></span>
+        </div>
+        <div class="flex justify-between">
+          <span class="text-gray-400">年間融解量</span>
+          <span id="ablation-val" class="text-red-300 font-bold"></span>
+        </div>
+        <div class="flex justify-between">
+          <span class="text-gray-400">マスバランス</span>
+          <span id="balance-val" class="font-bold"></span>
+        </div>
+        <div class="flex justify-between">
+          <span class="text-gray-400">100年後体積変化</span>
+          <span id="vol-final" class="font-bold"></span>
+        </div>
+        <div class="flex justify-between">
+          <span class="text-gray-400">消滅予測</span>
+          <span id="extinct-yr" class="font-bold"></span>
+        </div>
+      </div>
+
+      <!-- Physical formula -->
+      <div class="bg-gray-800 rounded-xl p-3 text-xs text-gray-400">
+        <p class="font-semibold text-gray-300 mb-1">計算式（簡略モデル）</p>
+        <p>蓄積: <code class="text-blue-300">A = P × (1 - ΔT×0.03)</code></p>
+        <p>融解: <code class="text-red-300">M = k × (1-α) × (T_base+ΔT)</code></p>
+        <p>MB = A - M</p>
+        <p class="mt-1">k=融解係数, α=アルベド, T_base=基準気温</p>
+      </div>
+    </div>
+
+    <!-- Charts -->
+    <div class="flex-1 space-y-3">
+      <div class="bg-gray-800 rounded-xl p-3">
+        <p class="text-gray-300 text-sm font-semibold mb-1">マスバランス 時系列（100年）</p>
+        <canvas id="mb-chart" height="200" class="w-full rounded" aria-label="マスバランス時系列グラフ"></canvas>
+      </div>
+      <div class="bg-gray-800 rounded-xl p-3">
+        <p class="text-gray-300 text-sm font-semibold mb-1">氷河体積変化（相対値）</p>
+        <canvas id="vol-chart" height="180" class="w-full rounded" aria-label="体積変化棒グラフ"></canvas>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+const SCENARIOS = [
+  {name:'現状維持',            temp:0.5,  snow:1100, albedo:0.70, color:'#4ade80'},
+  {name:'SSP1-2.6（低排出）',  temp:1.5,  snow:1000, albedo:0.65, color:'#60a5fa'},
+  {name:'SSP3-7.0（中排出）',  temp:3.0,  snow:900,  albedo:0.55, color:'#fb923c'},
+  {name:'SSP5-8.5（高排出）',  temp:5.0,  snow:750,  albedo:0.40, color:'#f87171'},
+];
+
+const scenDiv = document.getElementById('scenario-btns');
+SCENARIOS.forEach((s, i) => {
+  const btn = document.createElement('button');
+  btn.className = 'w-full text-white px-3 py-1.5 rounded text-sm font-semibold text-left';
+  btn.style.background = s.color + '33';
+  btn.style.border = `1px solid ${s.color}`;
+  btn.textContent = s.name;
+  btn.setAttribute('aria-label', `${s.name}シナリオを適用`);
+  btn.addEventListener('click', () => {
+    document.getElementById('temp-slider').value = s.temp;
+    document.getElementById('snow-slider').value = s.snow;
+    document.getElementById('albedo-slider').value = s.albedo;
+    updateAll();
+  });
+  scenDiv.appendChild(btn);
+});
+
+function computeSimulation(deltaT, snowMM, albedo) {
+  const P = snowMM / 1000; // m/yr water equivalent
+  const T_base = 2.0;
+  const k = 1.8;
+  const accumRate = P * Math.max(0.1, 1 - deltaT * 0.04);
+  const ablationRate = k * (1 - albedo) * Math.max(0, T_base + deltaT);
+  const mb = accumRate - ablationRate;
+
+  let volume = 100; // relative %
+  const volSeries = [volume];
+  const mbSeries = [];
+  let extinctYear = null;
+
+  for (let yr = 1; yr <= 100; yr++) {
+    const yearMB = mb + (Math.random() * 0.1 - 0.05); // tiny noise
+    mbSeries.push(yearMB);
+    volume = Math.max(0, volume + yearMB * 2);
+    volSeries.push(volume);
+    if (volume === 0 && extinctYear === null) extinctYear = yr;
+  }
+
+  return {accumRate, ablationRate, mb, mbSeries, volSeries, extinctYear};
+}
+
+function getParams() {
+  return {
+    deltaT: parseFloat(document.getElementById('temp-slider').value),
+    snow: parseFloat(document.getElementById('snow-slider').value),
+    albedo: parseFloat(document.getElementById('albedo-slider').value),
+  };
+}
+
+function updateAll() {
+  const {deltaT, snow, albedo} = getParams();
+  document.getElementById('temp-val').textContent = (deltaT >= 0 ? '+' : '') + deltaT.toFixed(1) + '°C';
+  document.getElementById('snow-val').textContent = snow + ' mm/yr';
+  document.getElementById('albedo-val').textContent = albedo.toFixed(2);
+
+  const sim = computeSimulation(deltaT, snow, albedo);
+  document.getElementById('accum-val').textContent = (sim.accumRate * 1000).toFixed(0) + ' mm/yr';
+  document.getElementById('ablation-val').textContent = (sim.ablationRate * 1000).toFixed(0) + ' mm/yr';
+  const mb = sim.mb;
+  const mbEl = document.getElementById('balance-val');
+  mbEl.textContent = (mb >= 0 ? '+' : '') + (mb * 1000).toFixed(0) + ' mm/yr';
+  mbEl.className = 'font-bold ' + (mb >= 0 ? 'text-green-400' : 'text-red-400');
+  const finalVol = sim.volSeries[100];
+  document.getElementById('vol-final').textContent = finalVol.toFixed(1) + '% 残存';
+  document.getElementById('extinct-yr').textContent = sim.extinctYear ? `${sim.extinctYear}年後` : '100年以内に消滅なし';
+
+  drawMBChart(sim.mbSeries);
+  drawVolChart(sim.volSeries);
+}
+
+function drawMBChart(mbSeries) {
+  const canvas = document.getElementById('mb-chart');
+  const ctx = canvas.getContext('2d');
+  canvas.width = canvas.offsetWidth * window.devicePixelRatio || 600;
+  canvas.height = 200 * (window.devicePixelRatio || 1);
+  ctx.scale(window.devicePixelRatio || 1, window.devicePixelRatio || 1);
+  const W = canvas.offsetWidth, H = 200;
+  ctx.clearRect(0, 0, W, H);
+  ctx.fillStyle = '#1f2937';
+  ctx.fillRect(0, 0, W, H);
+
+  const pad = {l:45, r:15, t:15, b:30};
+  const gW = W - pad.l - pad.r, gH = H - pad.t - pad.b;
+  const maxAbs = Math.max(0.5, ...mbSeries.map(Math.abs)) * 1.1;
+
+  ctx.strokeStyle = '#374151'; ctx.lineWidth = 1;
+  for (let i = 0; i <= 4; i++) {
+    const v = -maxAbs + i * maxAbs * 0.5;
+    const y = pad.t + gH/2 - (v/maxAbs) * gH/2;
+    ctx.beginPath(); ctx.moveTo(pad.l, y); ctx.lineTo(pad.l+gW, y); ctx.stroke();
+    ctx.fillStyle = '#6b7280'; ctx.font = '10px sans-serif';
+    ctx.fillText((v*1000).toFixed(0), 2, y+4);
+  }
+  // Zero line
+  const zeroY = pad.t + gH/2;
+  ctx.strokeStyle = '#9ca3af'; ctx.lineWidth = 1.5;
+  ctx.beginPath(); ctx.moveTo(pad.l, zeroY); ctx.lineTo(pad.l+gW, zeroY); ctx.stroke();
+
+  // MB line
+  ctx.beginPath();
+  mbSeries.forEach((v, i) => {
+    const x = pad.l + (i / (mbSeries.length-1)) * gW;
+    const y = pad.t + gH/2 - (v/maxAbs) * gH/2;
+    i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+  });
+  ctx.strokeStyle = '#60a5fa'; ctx.lineWidth = 2; ctx.stroke();
+
+  ctx.fillStyle = '#9ca3af'; ctx.font = '10px sans-serif';
+  ctx.fillText('年', pad.l + gW/2, H-5);
+  ctx.fillText('0', pad.l-8, H-5);
+  ctx.fillText('100', pad.l+gW-15, H-5);
+}
+
+function drawVolChart(volSeries) {
+  const canvas = document.getElementById('vol-chart');
+  const ctx = canvas.getContext('2d');
+  canvas.width = canvas.offsetWidth * window.devicePixelRatio || 600;
+  canvas.height = 180 * (window.devicePixelRatio || 1);
+  ctx.scale(window.devicePixelRatio || 1, window.devicePixelRatio || 1);
+  const W = canvas.offsetWidth, H = 180;
+  ctx.clearRect(0, 0, W, H);
+  ctx.fillStyle = '#1f2937';
+  ctx.fillRect(0, 0, W, H);
+
+  const pad = {l:45, r:15, t:15, b:30};
+  const gW = W - pad.l - pad.r, gH = H - pad.t - pad.b;
+  const barW = Math.max(2, Math.floor(gW / volSeries.length) - 1);
+
+  ctx.strokeStyle = '#374151'; ctx.lineWidth = 1;
+  for (let i = 0; i <= 4; i++) {
+    const v = i * 25;
+    const y = pad.t + gH - (v/100) * gH;
+    ctx.beginPath(); ctx.moveTo(pad.l, y); ctx.lineTo(pad.l+gW, y); ctx.stroke();
+    ctx.fillStyle = '#6b7280'; ctx.font = '10px sans-serif';
+    ctx.fillText(v + '%', 2, y+4);
+  }
+
+  volSeries.forEach((v, i) => {
+    const x = pad.l + (i / volSeries.length) * gW;
+    const barH = (v/100) * gH;
+    const hue = Math.round(v * 2); // 0=red, 200=cyan
+    ctx.fillStyle = `hsl(${hue}, 70%, 50%)`;
+    ctx.fillRect(x, pad.t + gH - barH, Math.max(1, barW), barH);
+  });
+
+  ctx.fillStyle = '#9ca3af'; ctx.font = '10px sans-serif';
+  ctx.fillText('年', pad.l + gW/2, H-5);
+  ctx.fillText('0', pad.l-8, H-5);
+  ctx.fillText('100', pad.l+gW-15, H-5);
+}
+
+['temp-slider','snow-slider','albedo-slider'].forEach(id => {
+  document.getElementById(id).addEventListener('input', updateAll);
+});
+
+window.addEventListener('resize', updateAll);
+updateAll();
+</script>
+</body>
+</html>
